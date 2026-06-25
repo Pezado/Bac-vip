@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId);
+      allow create: if isValidId(userId)
+        && incoming().username is string && incoming().username.size() <= 100
+        && incoming().phone is string && incoming().phone.size() <= 32
+        && incoming().status in ['active', 'inactive', 'desactivated', 'expired', 'pendente']
+        && incoming().isVip is bool;
+      allow update: if isValidId(userId)
+        && incoming().username is string && incoming().username.size() <= 100
+        && incoming().phone is string && incoming().phone.size() <= 32
+        && incoming().status in ['active', 'inactive', 'desactivated', 'expired', 'pendente']
+        && incoming().isVip is bool;
+    }
+
+    match /rounds/{roundId} {
+      allow create: if isValidId(roundId)
+        && incoming().userId is string && incoming().userId.size() <= 128
+        && incoming().result in ['PLAYER', 'BANKER', 'TIE']
+        && incoming().timestamp is number;
+      allow read: if true;
+    }
+
+    match /learned_patterns/{patternId} {
+      allow get: if isValidId(patternId);
+      allow list: if true;
+      allow create, update: if isValidId(patternId);
+    }
+  }
+}

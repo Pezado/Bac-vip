@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-serif: "Playfair Display", serif;
+}
+
+@keyframes fadeOutIn {
+  0% { opacity: 0; transform: scale(0.9); }
+  60% { opacity: 0; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes lampBreath {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(0.98);
+    filter: drop-shadow(0 0 2px rgba(234, 179, 8, 0.2));
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.02);
+    filter: drop-shadow(0 0 15px rgba(234, 179, 8, 0.9));
+  }
+}
+
+.animate-fade-out-in {
+  animation: fadeOutIn 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-lamp-breath {
+  animation: lampBreath 3.5s ease-in-out infinite;
+}
+

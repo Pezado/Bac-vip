@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "User": {
+      "title": "App User",
+      "description": "User account information and subscription status",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "description": "User's full name or nickname" },
+        "phone": { "type": "string", "description": "Phone number used for login and status check" },
+        "status": { 
+          "type": "string", 
+          "enum": ["active", "inactive", "desactivated", "expired", "pendente"],
+          "description": "Subscription or access status"
+        },
+        "isVip": { "type": "boolean", "description": "Whether the user has VIP access" },
+        "validity": { "type": "string", "format": "date-time", "description": "Access expiration date" },
+        "creationDate": { "type": "string", "format": "date-time", "description": "When the account was created" },
+        "localHistory": { "type": "array", "description": "User's local historical analysis data" }
+      },
+      "required": ["username", "phone", "status", "isVip", "creationDate"]
+    },
+    "GameRound": {
+      "title": "Game Round",
+      "description": "A single round result and its prediction",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "result": { "type": "string", "enum": ["PLAYER", "BANKER", "TIE"] },
+        "prediction": { "type": "string" },
+        "confidence": { "type": "number" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["userId", "result", "timestamp"]
+    },
+    "LearnedPattern": {
+      "title": "Learned Pattern",
+      "description": "Learned 5-sequence block pattern transitions for dynamic prediction",
+      "type": "object",
+      "properties": {
+        "PLAYER": { "type": "number" },
+        "BANKER": { "type": "number" },
+        "TIE": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "Collection of application users"
+    },
+    "rounds": {
+      "schema": "GameRound",
+      "description": "Historical record of game rounds"
+    },
+    "learned_patterns": {
+      "schema": "LearnedPattern",
+      "description": "Learned 5-sequence patterns and transition counts"
+    }
+  }
+}
