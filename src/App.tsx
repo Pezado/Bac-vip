@@ -1253,7 +1253,7 @@ export default function App() {
                         <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Sequência:</span>
                         <div className="flex items-center gap-1.5 font-mono">
                           {history.slice(-5).map((res, idx) => (
-                            <span key={idx} className="text-sm select-none font-black flex items-center">
+                            <span key={`seq-analyzing-${idx}-${res}`} className="text-sm select-none font-black flex items-center">
                               {res === 'PLAYER' ? '🔵' : res === 'BANKER' ? '🔴' : '🟡'}
                               {idx < Math.min(history.length, 5) - 1 && <span className="text-zinc-700/60 mx-1">/</span>}
                             </span>
@@ -1269,6 +1269,28 @@ export default function App() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
+                    </div>
+                  </div>
+                ) : (history.length >= 14 && statsBase === null) ? (
+                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
+                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
+                      📊 AGUARDANDO 📊
+                      <br />
+                      📊 CALIBRAÇÃO 📊
+                    </span>
+                    <p className="text-zinc-400 font-sans text-center text-xs uppercase tracking-wider max-w-[320px] leading-relaxed mx-auto">
+                      Insira as percentagens do gráfico abaixo para calibrar o algoritmo de inteligência e liberar a previsão.
+                    </p>
+                  </div>
+                ) : (history.length < 14) ? (
+                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
+                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500/70 uppercase">
+                      🚨 AGUARDANDO 🚨
+                      <br />
+                      🚨 ENTRADAS 🚨
+                    </span>
+                    <div className="inline-flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full text-[11px] font-black uppercase tracking-[0.2em] text-yellow-500">
+                      Sincronize o Gráfico: {history.length}/14
                     </div>
                   </div>
                 ) : isWaitingNextResult ? (
@@ -1360,34 +1382,11 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                ) : (history.length >= 14 && statsBase === null) ? (
-                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
-                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
-                      📊 AGUARDANDO 📊
-                      <br />
-                      📊 CALIBRAÇÃO 📊
-                    </span>
-                    <p className="text-zinc-400 font-sans text-center text-xs uppercase tracking-wider max-w-[320px] leading-relaxed mx-auto">
-                      Insira as percentagens do gráfico abaixo para calibrar o algoritmo de inteligência e liberar a previsão.
-                    </p>
-                  </div>
-                ) : (prediction?.side === 'WAIT' || history.length < 14) ? (
+                ) : (prediction?.side === 'WAIT') ? (
                   <div className="flex flex-col items-center justify-center py-4 w-full">
-                    {history.length < 3 ? (
-                      <>
-                        <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-zinc-500 uppercase">
-                          🚨 AGUARDANDO 🚨
-                          <br />
-                          🚨 ENTRADAS 🚨
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
-                          🚨 analisando...🚨
-                        </span>
-                      </>
-                    )}
+                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
+                      🚨 analisando...🚨
+                    </span>
                     
                     {/* Sequência real-time stats only if bot has chart data (history.length > 0) */}
                     {history.length > 0 && (
@@ -1395,7 +1394,7 @@ export default function App() {
                         <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Sequência:</span>
                         <div className="flex items-center gap-1.5 font-mono">
                           {history.slice(-5).map((res, idx) => (
-                            <span key={idx} className="text-sm select-none font-black flex items-center">
+                            <span key={`seq-wait-${idx}-${res}`} className="text-sm select-none font-black flex items-center">
                               {res === 'PLAYER' ? '🔵' : res === 'BANKER' ? '🔴' : '🟡'}
                               {idx < Math.min(history.length, 5) - 1 && <span className="text-zinc-700/60 mx-1">/</span>}
                             </span>
