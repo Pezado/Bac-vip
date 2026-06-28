@@ -234,7 +234,7 @@ export const getGlobalRounds = async (limitNum: number = 50): Promise<any[]> => 
  */
 export const recordDynamicPattern = async (phone: string, sequence5: string, nextResult: string) => {
   const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone) return;
+  if (normalizedPhone !== ADMIN_PHONE) return; // Apenas o administrador grava padrões aprendido
 
   try {
     const localKey = `local_learned_patterns_${normalizedPhone}`;
@@ -264,8 +264,7 @@ export const recordDynamicPattern = async (phone: string, sequence5: string, nex
  * Retrieves all registered dynamic pattern transitions for a given user from Realtime Database
  */
 export const getDynamicPatterns = async (phone: string): Promise<Record<string, Record<string, number>>> => {
-  const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone) return {};
+  const normalizedPhone = ADMIN_PHONE; // Sempre lê os padrões do administrador
 
   const path = `BAC-BOT/users/${normalizedPhone}/learned_patterns`;
   try {
@@ -315,7 +314,7 @@ export const getDynamicPatterns = async (phone: string): Promise<Record<string, 
  */
 export const saveRound = async (phone: string, data: any) => {
   const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone) return;
+  if (normalizedPhone !== ADMIN_PHONE) return; // Apenas o administrador grava rodadas no Firebase
 
   const path = `BAC-BOT/users/${normalizedPhone}/rounds`;
   const roundPayload = {
@@ -348,8 +347,7 @@ export const saveRound = async (phone: string, data: any) => {
  * Fetches user-specific rounds from Firebase Realtime Database
  */
 export const getUserRounds = async (phone: string, limitNum: number = 50): Promise<any[]> => {
-  const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone) return [];
+  const normalizedPhone = ADMIN_PHONE; // Sempre lê o histórico de rodadas do administrador
   const path = `BAC-BOT/users/${normalizedPhone}/rounds`;
   try {
     const roundsRef = ref(rtdb, path);
@@ -460,7 +458,7 @@ export const listenToBacBotRounds = (phone: string, callback: (rounds: Result[])
  */
 export const saveBacBotRound = async (phone: string, result: Result) => {
   const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone) return;
+  if (normalizedPhone !== ADMIN_PHONE) return; // Apenas o administrador insere rodadas no histórico compartilhado
 
   try {
     const dbRef = ref(rtdb, `BAC-BOT/users/${normalizedPhone}/rounds_history`);
@@ -511,7 +509,7 @@ export const saveBacBotRound = async (phone: string, result: Result) => {
  */
 export const setBacBotHistory = async (phone: string, rounds: Result[]) => {
   const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone) return;
+  if (normalizedPhone !== ADMIN_PHONE) return; // Apenas o administrador altera diretamente o histórico compartilhado
 
   try {
     const dbRef = ref(rtdb, `BAC-BOT/users/${normalizedPhone}/rounds_history`);
@@ -563,7 +561,7 @@ export const recordPatternOutcome = async (
   wasCorrect: boolean
 ) => {
   const normalizedPhone = phone.replace(/\D/g, '');
-  if (!normalizedPhone || !patternName) return;
+  if (normalizedPhone !== ADMIN_PHONE || !patternName) return; // Apenas administrador grava performance dos padrões
 
   const bResult = actualResult === 'PLAYER' ? 'P' : actualResult === 'BANKER' ? 'B' : 'T';
   const pResult = predictedResult === 'PLAYER' ? 'P' : predictedResult === 'BANKER' ? 'B' : 'T';

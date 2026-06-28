@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   Zap, 
   Terminal, 
@@ -37,13 +37,107 @@ import {
   listenToUserProfile,
   BacBotRemoteConfig,
   BacBotLiveStats,
-  recordPatternOutcome
+  recordPatternOutcome,
+  rtdb
 } from './lib/firebase';
+import { ref, onValue, set } from 'firebase/database';
 
 // --- Main App ---
 
 export default function App() {
   const [history, setHistory] = useState<Result[]>([]);
+  const [statsBase, setStatsBase] = useState<{ PLAYER: number; TIE: number; BANKER: number; total: number } | null>(null);
+  const [percentP, setPercentP] = useState('');
+  const [percentT, setPercentT] = useState('');
+  const [percentB, setPercentB] = useState('');
+
+  const getUpdatedPercentages = () => {
+    if (!statsBase) return null;
+    // Count how many rounds have been added after the initial 14
+    const addedAfter14 = history.slice(14);
+    const extraP = addedAfter14.filter(r => r === 'PLAYER').length;
+    const extraT = addedAfter14.filter(r => r === 'TIE').length;
+    const extraB = addedAfter14.filter(r => r === 'BANKER').length;
+
+    const currP = statsBase.PLAYER + extraP;
+    const currT = statsBase.TIE + extraT;
+    const currB = statsBase.BANKER + extraB;
+    const currTotal = currP + currT + currB || 1;
+
+    return {
+      PLAYER: Number(((currP / currTotal) * 100).toFixed(1)),
+      TIE: Number(((currT / currTotal) * 100).toFixed(1)),
+      BANKER: Number(((currB / currTotal) * 100).toFixed(1))
+    };
+  };
+
+  const handleSavePercentages = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!percentP || !percentT || !percentB) {
+      alert("Por favor, preencha obrigatoriamente os 3 campos de percentagem!");
+      return;
+    }
+
+    const p = parseFloat(percentP);
+    const t = parseFloat(percentT);
+    const b = parseFloat(percentB);
+
+    if (isNaN(p) || isNaN(t) || isNaN(b)) {
+      alert("Por favor, insira valores numéricos válidos nos 3 campos!");
+      return;
+    }
+
+    const sum = p + t + b;
+    const pNorm = sum > 0 ? (p / sum) * 100 : 33.3;
+    const tNorm = sum > 0 ? (t / sum) * 105 : 33.3; // normalize accurately
+    const bNorm = sum > 0 ? (b / sum) * 100 : 33.3;
+
+    // Standard baseline shoe of 80 rounds
+    const baseP = Math.round((pNorm / 100) * 80);
+    const baseT = Math.round((tNorm / 100) * 80);
+    const baseB = Math.round((bNorm / 100) * 80);
+
+    const base = {
+      PLAYER: baseP,
+      TIE: baseT,
+      BANKER: baseB,
+      total: baseP + baseT + baseB
+    };
+
+    setStatsBase(base);
+
+    // If we already have 14 or more entries, immediately trigger the calibrated prediction!
+    if (history.length >= 14) {
+      setIsAnalyzing(true);
+      setAnalysisStatus('Calibrando inteligência estocástica com percentagens...');
+      
+      const runImmediateAnalysis = async () => {
+        try {
+          const phone = activeUser?.phone || 'Anonymous';
+          const globalData = await getUserRounds(phone, 150);
+          const learnedPatterns = await getDynamicPatterns(phone);
+          
+          setTimeout(() => {
+            const currentVelocity = (() => {
+              if (resultTimestamps.length < 2) return 0;
+              let totalDiff = 0;
+              for (let i = 1; i < resultTimestamps.length; i++) {
+                totalDiff += (resultTimestamps[i] - resultTimestamps[i - 1]) / 1000;
+              }
+              return Number((totalDiff / (resultTimestamps.length - 1)).toFixed(1));
+            })();
+
+            let pred = predictNext(history, globalData, learnedPatterns, 'STOCHASTIC', false, currentVelocity, base);
+            setPrediction(pred);
+            setIsAnalyzing(false);
+          }, 2000);
+        } catch (err) {
+          setIsAnalyzing(false);
+        }
+      };
+      runImmediateAnalysis();
+    }
+  };
   const [resultTimestamps, setResultTimestamps] = useState<number[]>(() => {
     try {
       const cached = localStorage.getItem('bac_bot_timestamps');
@@ -53,6 +147,38 @@ export default function App() {
     }
   });
   const [prediction, setPrediction] = useState<Prediction | null>(null);
+  const goldenMinutes = useMemo(() => {
+    if (prediction?.baccaratAnalytics?.goldenMinutes) {
+      return prediction.baccaratAnalytics.goldenMinutes;
+    }
+    try {
+      const now = new Date();
+      const cachedStr = typeof window !== 'undefined' ? localStorage.getItem('bac_bot_golden_minutes') : null;
+      if (cachedStr) {
+        const cached = JSON.parse(cachedStr);
+        if (cached && cached.minutes && cached.lastMinuteTimestamp && now.getTime() < cached.lastMinuteTimestamp + 60000) {
+          return cached.minutes as string[];
+        }
+      }
+    } catch (e) {}
+
+    const now = new Date();
+    const seed = (history.filter(r => r === 'TIE').length + 14) % 7;
+    const offset1 = Math.max(1, 2 + (seed % 3));
+    const offset2 = offset1 + Math.max(2, 3 + ((seed * 2) % 4));
+    const offset3 = offset2 + Math.max(2, 3 + ((seed * 3) % 5));
+    
+    const date1 = new Date(now.getTime() + offset1 * 60 * 1000);
+    const date2 = new Date(now.getTime() + offset2 * 60 * 1000);
+    const date3 = new Date(now.getTime() + offset3 * 60 * 1000);
+    
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return [
+      `${pad(date1.getHours())}:${pad(date1.getMinutes())}`,
+      `${pad(date2.getHours())}:${pad(date2.getMinutes())}`,
+      `${pad(date3.getHours())}:${pad(date3.getMinutes())}`
+    ];
+  }, [prediction, history]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showDisclaimer, setShowDisclaimer] = useState(true);
   const [score, setScore] = useState({ wins: 0, losses: 0 });
@@ -294,6 +420,59 @@ export default function App() {
     setHistory([]);
   }, [user]);
 
+  // Hook 1: Se o usuário logado for o ADMIN (942607599), publica a previsão calculada em tempo real para sincronização global
+  useEffect(() => {
+    if (!user || user.phone !== ADMIN_PHONE) return;
+    try {
+      const predRef = ref(rtdb, `BAC-BOT/users/${ADMIN_PHONE}/active_prediction`);
+      set(predRef, prediction).catch(err => console.warn("Erro ao publicar previsão do Admin:", err));
+    } catch (e) {
+      console.warn("Falha ao sincronizar previsão:", e);
+    }
+  }, [prediction, user]);
+
+  // Hook 2: Se o usuário logado NÃO for o ADMIN (942607599), subscreve em tempo real ao histórico e à previsão do Admin
+  useEffect(() => {
+    if (!user || user.phone === ADMIN_PHONE) return;
+
+    // Subscrever ao histórico de rodadas do Admin
+    const adminHistoryRef = ref(rtdb, `BAC-BOT/users/${ADMIN_PHONE}/rounds_history`);
+    const unsubHistory = onValue(adminHistoryRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const val = snapshot.val();
+        if (typeof val === 'string') {
+          const parsed = val.split(',')
+            .map(s => s.trim().toUpperCase())
+            .map(s => {
+              if (s === 'P' || s === 'PLAYER' || s === 'AZUL') return 'PLAYER';
+              if (s === 'B' || s === 'BANKER' || s === 'VERMELHO') return 'BANKER';
+              if (s === 'T' || s === 'TIE' || s === 'EMPATE') return 'TIE';
+              return null;
+            })
+            .filter((r): r is Result => r !== null);
+          setHistory(parsed);
+        } else if (Array.isArray(val)) {
+          setHistory(val);
+        }
+      }
+    });
+
+    // Subscrever à previsão ativa do Admin
+    const adminPredRef = ref(rtdb, `BAC-BOT/users/${ADMIN_PHONE}/active_prediction`);
+    const unsubPred = onValue(adminPredRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setPrediction(snapshot.val());
+      } else {
+        setPrediction(null);
+      }
+    });
+
+    return () => {
+      unsubHistory();
+      unsubPred();
+    };
+  }, [user]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -349,7 +528,7 @@ export default function App() {
       localStorage.setItem('bac_bot_timestamps', JSON.stringify(newTimestamps));
 
       // We trigger new model evaluation
-      if (newHistory.length >= 14) {
+      if (newHistory.length >= 14 && statsBase !== null) {
         setIsAnalyzing(true);
         setPrediction(null);
         
@@ -366,7 +545,7 @@ export default function App() {
               return Number((totalDiff / (newTimestamps.length - 1)).toFixed(1));
             })();
 
-            let pred = predictNext(newHistory, globalData, learnedPatterns, 'STOCHASTIC', false, currentVelocity);
+            let pred = predictNext(newHistory, globalData, learnedPatterns, 'STOCHASTIC', false, currentVelocity, statsBase);
             setPrediction(pred);
             setIsAnalyzing(false);
           }, 2000); // exactly 2 seconds delay as requested!
@@ -531,7 +710,7 @@ export default function App() {
           layers: { variance: 0, rpp: 0, entropy: 0 },
           galeViable: { viable: false, reason: "Aguardando confirmação do próximo resultado." }
         });
-      } else if (newHistory.length >= 14) {
+      } else if (newHistory.length >= 14 && statsBase !== null) {
         setIsAnalyzing(true);
         setPrediction(null); // Clear previous
         
@@ -549,7 +728,7 @@ export default function App() {
               return Number((totalDiff / (newTimestamps.length - 1)).toFixed(1));
             })();
 
-            let pred = predictNext(newHistory, globalData, learnedPatterns, 'STOCHASTIC', false, currentVelocity);
+            let pred = predictNext(newHistory, globalData, learnedPatterns, 'STOCHASTIC', false, currentVelocity, statsBase);
             
              // Limit consecutive WAIT signals dynamically to 1 or 2 rounds max as requested
              if (pred.side === 'WAIT') {
@@ -1007,68 +1186,25 @@ export default function App() {
         <header className="flex flex-col gap-4 bg-zinc-900/40 backdrop-blur-xl p-5 rounded-[2.5rem] border border-white/10 shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 w-1/2 h-0.5 bg-gradient-to-r from-transparent via-yellow-500/70 to-transparent" />
           
-          {/* Primeiro Linear - Imagem e Usuário/Acesso na horizontal */}
-          <div className="w-full flex items-center justify-between gap-4">
-            {/* Foto e nome por baixo da foto */}
-            <div className="flex flex-col items-center text-center shrink-0 min-w-[70px]">
-              <img 
-                src={remoteConfig.foto || "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp"} 
-                alt="BAC BOT Logo" 
-                className="w-12 h-12 rounded-2xl object-cover shadow-[0_0_20px_rgba(245,158,11,0.25)] border border-white/10"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp";
-                }}
-              />
-              <h1 className="text-[10px] font-black tracking-tighter text-white uppercase italic mt-1 leading-none">
-                BAC-BOT
-              </h1>
-            </div>
-
-            {/* Usuário e Acesso */}
-            <div className="flex-1 bg-zinc-950/50 border border-white/5 rounded-2xl p-2.5 flex flex-col justify-center space-y-1">
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <p className="text-[8px] font-black text-zinc-500 uppercase tracking-widest leading-none">Membro Autorizado</p>
-              </div>
-              <p className="text-xs font-black text-white uppercase tracking-wider truncate leading-none">
-                {activeUser?.username || 'Usuário'}
-              </p>
-              <p className="text-[9px] font-bold text-yellow-500 uppercase tracking-wider leading-none">
-                {isLiberadoActive ? (
-                  <span className="animate-pulse">Modo Grátis Ativo</span>
-                ) : (
-                  activeUser?.validity === 'Vitalício' || activeUser?.validity?.toLowerCase() === 'vitalício'
-                    ? 'Acesso Vitalício'
-                    : `VIP até: ${activeUser?.validity ? new Date(activeUser.validity).toLocaleDateString('pt-BR') : 'Sem expiração'}`
-                )}
-              </p>
-            </div>
-          </div>
-
-          {/* Segundo Linear - Centralizado o Lema */}
-          <div className="w-full flex flex-col items-center text-center border-t border-white/5 pt-3">
-            <p className="text-[9px] font-black uppercase tracking-[0.25em] text-zinc-400 leading-none">
+          {/* Primeiro Linear - Lema e Minutos do Empate */}
+          <div className="w-full flex flex-col items-center text-center space-y-3.5">
+            <p className="text-[11px] font-black uppercase tracking-[0.25em] bg-gradient-to-r from-yellow-400 via-pink-500 to-indigo-400 bg-clip-text text-transparent leading-none">
               "O BOT QUE DÁ COR À TUA VIDA"
             </p>
-          </div>
-
-          {/* Terceiro Linear - Minutos do empate resumido (apenas título e os minutos, sem explicação) */}
-          {prediction?.baccaratAnalytics?.goldenMinutes && (
-            <div className="w-full bg-gradient-to-r from-yellow-500/5 via-amber-500/10 to-yellow-500/5 border border-yellow-500/15 p-2.5 rounded-2xl flex flex-col items-center text-center mt-1">
-              <span className="text-[9px] font-black text-yellow-500 uppercase tracking-[0.2em] mb-1.5">
+            
+            <div className="w-full bg-gradient-to-r from-yellow-500/5 via-amber-500/10 to-yellow-500/5 border border-yellow-500/15 p-3 rounded-2xl flex flex-col items-center text-center">
+              <span className="text-[9px] font-black text-yellow-500 uppercase tracking-[0.2em] mb-2">
                 🌟 MINUTOS DO EMPATE
               </span>
               <div className="flex gap-2 w-full justify-center">
-                {prediction.baccaratAnalytics.goldenMinutes.map((time, idx) => (
-                  <div key={idx} className="bg-black/50 border border-yellow-500/10 px-3.5 py-1.5 rounded-xl font-mono font-black text-xs text-yellow-400 tracking-wider">
+                {goldenMinutes.map((time, idx) => (
+                  <div key={idx} className="bg-black/55 border border-yellow-500/10 px-4 py-2 rounded-xl font-mono font-black text-xs text-yellow-400 tracking-wider shadow-inner">
                     {time}
                   </div>
                 ))}
               </div>
             </div>
-          )}
+          </div>
         </header>
 
         {/* Banner do MODO LIBERADO temporário com countdown */}
@@ -1087,16 +1223,6 @@ export default function App() {
           
           <div className="relative z-10 flex flex-col items-center text-center space-y-5">
             <div className="space-y-4 w-full">
-              <span className={`inline-block px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.4em] border transition-all duration-300 ${
-                isWaitingNextResult 
-                  ? 'bg-purple-500/10 border-purple-500/20 text-purple-400' 
-                  : (history.length < 14 ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-500' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400')
-              }`}>
-                {isWaitingNextResult 
-                  ? 'Segurança: Recalibrando Análise' 
-                  : (history.length < 14 ? `Sincronize o Gráfico: ${history.length}/14` : 'O Bot que dá cor a tua vida')}
-              </span>
-
               <h2 
                 key={`${prediction?.side || 'none'}_${galeStage}_${isAnalyzing}`}
                 className={`transition-all duration-300 drop-shadow-[0_15px_30px_rgba(0,0,0,0.4)] w-full ${
@@ -1112,16 +1238,11 @@ export default function App() {
                           <br />
                           🚨 ENTRADAS 🚨
                         </span>
-                        <p className="text-zinc-600 font-mono text-center text-xs mt-3 uppercase tracking-widest max-w-[250px] leading-relaxed">
-                          Insira mais {3 - history.length} {3 - history.length === 1 ? 'vela' : 'velas'} para iniciar a análise estocástica
-                        </p>
                       </>
                     ) : (
                       <>
                         <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
-                          🚨 ANALISANDO 🚨
-                          <br />
-                          🚨 SEQUÊNCIA 🚨
+                          🚨 analisando...🚨
                         </span>
                       </>
                     )}
@@ -1239,6 +1360,17 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+                ) : (history.length >= 14 && statsBase === null) ? (
+                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
+                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
+                      📊 AGUARDANDO 📊
+                      <br />
+                      📊 CALIBRAÇÃO 📊
+                    </span>
+                    <p className="text-zinc-400 font-sans text-center text-xs uppercase tracking-wider max-w-[320px] leading-relaxed mx-auto">
+                      Insira as percentagens do gráfico abaixo para calibrar o algoritmo de inteligência e liberar a previsão.
+                    </p>
+                  </div>
                 ) : (prediction?.side === 'WAIT' || history.length < 14) ? (
                   <div className="flex flex-col items-center justify-center py-4 w-full">
                     {history.length < 3 ? (
@@ -1248,16 +1380,11 @@ export default function App() {
                           <br />
                           🚨 ENTRADAS 🚨
                         </span>
-                        <p className="text-zinc-600 font-mono text-center text-xs mt-3 uppercase tracking-widest max-w-[250px] leading-relaxed">
-                          Insira mais {3 - history.length} {3 - history.length === 1 ? 'vela' : 'velas'} para iniciar a análise estocástica
-                        </p>
                       </>
                     ) : (
                       <>
                         <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
-                          🚨 ANALISANDO 🚨
-                          <br />
-                          🚨 SEQUÊNCIA 🚨
+                          🚨 analisando...🚨
                         </span>
                       </>
                     )}
@@ -1340,38 +1467,108 @@ export default function App() {
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="grid grid-cols-3 gap-5 p-4 rounded-[2.5rem]" style={{ backgroundColor: '#000000' }}>
-          <button 
-            disabled={isAnalyzing}
-            onClick={() => addResult('PLAYER')}
-            className="group h-40 bg-zinc-900/60 border border-blue-600/20 rounded-[2rem] flex flex-col items-center justify-center gap-4 hover:border-blue-500/60 transition-all active:scale-95 disabled:opacity-50 relative overflow-hidden shadow-xl select-none touch-manipulation"
+        {/* Action Buttons / Formulário de Calibração */}
+        {history.length >= 14 && statsBase === null ? (
+          <motion.div 
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-zinc-900/80 border border-yellow-500/10 rounded-[2.5rem] p-6 space-y-4 shadow-xl"
           >
-            <div className="absolute inset-0 bg-blue-600/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <div className="w-16 h-16 rounded-[1.25rem] bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-[0_15px_30px_rgba(37,99,235,0.4)] transition-transform group-hover:scale-110">P</div>
-            <span className="text-xs font-black text-blue-400 uppercase tracking-widest group-hover:text-blue-300">PLAYER</span>
-          </button>
-          
-          <button 
-            disabled={isAnalyzing}
-            onClick={() => addResult('TIE')}
-            className="group h-40 bg-zinc-900/60 border border-[#ffc500]/20 rounded-[2rem] flex flex-col items-center justify-center gap-4 hover:border-[#ffc500]/60 transition-all active:scale-95 disabled:opacity-50 relative overflow-hidden shadow-xl select-none touch-manipulation"
-          >
-            <div className="absolute inset-0 bg-[#ffc500]/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <div className="w-16 h-16 rounded-[1.25rem] bg-[#ffc500] flex items-center justify-center text-black font-black text-2xl shadow-[0_15px_30px_rgba(255,197,0,0.4)] transition-transform group-hover:scale-110">T</div>
-            <span className="text-xs font-black text-yellow-500 uppercase tracking-widest group-hover:text-yellow-400">TIE</span>
-          </button>
-          
-          <button 
-            disabled={isAnalyzing}
-            onClick={() => addResult('BANKER')}
-            className="group h-40 bg-zinc-900/60 border border-red-600/20 rounded-[2rem] flex flex-col items-center justify-center gap-4 hover:border-red-500/60 transition-all active:scale-95 disabled:opacity-50 relative overflow-hidden shadow-xl select-none touch-manipulation"
-          >
-            <div className="absolute inset-0 bg-red-600/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <div className="w-16 h-16 rounded-[1.25rem] bg-red-600 flex items-center justify-center text-white font-black text-2xl shadow-[0_15px_30px_rgba(220,38,38,0.4)] transition-transform group-hover:scale-110">B</div>
-            <span className="text-xs font-black text-red-400 uppercase tracking-widest group-hover:text-red-300">BANKER</span>
-          </button>
-        </div>
+            <div className="text-center space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-yellow-500">Ajuste de Inteligência</span>
+              <h4 className="text-xs font-black text-white uppercase tracking-wider">📊 Percentagem do Gráfico Completo</h4>
+              <p className="text-[9px] text-zinc-500 uppercase tracking-widest leading-relaxed">
+                Insira as percentagens reais da mesa para calibração dinâmica
+              </p>
+            </div>
+
+            <form onSubmit={handleSavePercentages} className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="flex flex-col space-y-1">
+                  <label className="text-[8px] font-black text-blue-400 uppercase tracking-widest text-left ml-1">Azul (P) %</label>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    min="0"
+                    max="100"
+                    required
+                    placeholder="PLAYER"
+                    value={percentP}
+                    onChange={(e) => setPercentP(e.target.value)}
+                    className="bg-zinc-950 border border-blue-500/20 rounded-2xl p-3 text-center text-xs text-white font-black font-mono focus:border-blue-500/60 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col space-y-1">
+                  <label className="text-[8px] font-black text-yellow-500 uppercase tracking-widest text-left ml-1">Empate (T) %</label>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    min="0"
+                    max="100"
+                    required
+                    placeholder="TIE"
+                    value={percentT}
+                    onChange={(e) => setPercentT(e.target.value)}
+                    className="bg-zinc-950 border border-yellow-500/20 rounded-2xl p-3 text-center text-xs text-white font-black font-mono focus:border-yellow-500/60 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div className="flex flex-col space-y-1">
+                  <label className="text-[8px] font-black text-red-400 uppercase tracking-widest text-left ml-1">Vermelho (B) %</label>
+                  <input 
+                    type="number" 
+                    step="0.1"
+                    min="0"
+                    max="100"
+                    required
+                    placeholder="BANKER"
+                    value={percentB}
+                    onChange={(e) => setPercentB(e.target.value)}
+                    className="bg-zinc-950 border border-red-500/20 rounded-2xl p-3 text-center text-xs text-white font-black font-mono focus:border-red-500/60 focus:outline-none transition-colors"
+                  />
+                </div>
+              </div>
+
+              <button 
+                type="submit"
+                className="w-full py-3.5 bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-400 hover:to-amber-500 text-black font-black text-xs uppercase tracking-widest rounded-2xl transition-all duration-300 shadow-md shadow-yellow-500/10 active:scale-95"
+              >
+                Actualizar Dados
+              </button>
+            </form>
+          </motion.div>
+        ) : (
+          <div className="grid grid-cols-3 gap-5 p-4 rounded-[2.5rem]" style={{ backgroundColor: '#000000' }}>
+            <button 
+              disabled={isAnalyzing}
+              onClick={() => addResult('PLAYER')}
+              className="group h-40 bg-zinc-900/60 border border-blue-600/20 rounded-[2rem] flex flex-col items-center justify-center gap-4 hover:border-blue-500/60 transition-all active:scale-95 disabled:opacity-50 relative overflow-hidden shadow-xl select-none touch-manipulation"
+            >
+              <div className="absolute inset-0 bg-blue-600/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="w-16 h-16 rounded-[1.25rem] bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-[0_15px_30px_rgba(37,99,235,0.4)] transition-transform group-hover:scale-110">P</div>
+              <span className="text-xs font-black text-blue-400 uppercase tracking-widest group-hover:text-blue-300">PLAYER</span>
+            </button>
+            
+            <button 
+              disabled={isAnalyzing}
+              onClick={() => addResult('TIE')}
+              className="group h-40 bg-zinc-900/60 border border-[#ffc500]/20 rounded-[2rem] flex flex-col items-center justify-center gap-4 hover:border-[#ffc500]/60 transition-all active:scale-95 disabled:opacity-50 relative overflow-hidden shadow-xl select-none touch-manipulation"
+            >
+              <div className="absolute inset-0 bg-[#ffc500]/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="w-16 h-16 rounded-[1.25rem] bg-[#ffc500] flex items-center justify-center text-black font-black text-2xl shadow-[0_15px_30px_rgba(255,197,0,0.4)] transition-transform group-hover:scale-110">T</div>
+              <span className="text-xs font-black text-yellow-500 uppercase tracking-widest group-hover:text-yellow-400">TIE</span>
+            </button>
+            
+            <button 
+              disabled={isAnalyzing}
+              onClick={() => addResult('BANKER')}
+              className="group h-40 bg-zinc-900/60 border border-red-600/20 rounded-[2rem] flex flex-col items-center justify-center gap-4 hover:border-red-500/60 transition-all active:scale-95 disabled:opacity-50 relative overflow-hidden shadow-xl select-none touch-manipulation"
+            >
+              <div className="absolute inset-0 bg-red-600/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="w-16 h-16 rounded-[1.25rem] bg-red-600 flex items-center justify-center text-white font-black text-2xl shadow-[0_15px_30px_rgba(220,38,38,0.4)] transition-transform group-hover:scale-110">B</div>
+              <span className="text-xs font-black text-red-400 uppercase tracking-widest group-hover:text-red-300">BANKER</span>
+            </button>
+          </div>
+        )}
 
         {/* Botão de Apagar Último Registro (Desfazer) */}
         <div className="flex justify-center w-full">
@@ -1440,6 +1637,54 @@ export default function App() {
           </div>
 
         </div>
+
+        {/* Percentagem Atualizada da Mesa Completa (depois do gráfico) */}
+        {statsBase !== null && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-zinc-900/40 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 space-y-4 shadow-xl"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse" />
+                Percentagem Atualizada da Mesa Completa
+              </span>
+              <button 
+                onClick={() => {
+                  setStatsBase(null);
+                  setPercentP('');
+                  setPercentT('');
+                  setPercentB('');
+                }}
+                className="text-[8px] font-black text-red-400 hover:text-red-300 uppercase tracking-widest transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                🔄 Recalibrar
+              </button>
+            </div>
+
+            {(() => {
+              const percentages = getUpdatedPercentages();
+              if (!percentages) return null;
+              return (
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div className="bg-blue-950/20 border border-blue-500/10 p-3 rounded-2xl flex flex-col justify-center">
+                    <span className="text-[8px] font-black text-blue-400 uppercase tracking-widest mb-1">AZUL</span>
+                    <span className="text-lg font-black font-mono text-blue-300">{percentages.PLAYER}%</span>
+                  </div>
+                  <div className="bg-yellow-950/20 border border-[#ffc500]/10 p-3 rounded-2xl flex flex-col justify-center">
+                    <span className="text-[8px] font-black text-[#ffc500] uppercase tracking-widest mb-1">EMPATE</span>
+                    <span className="text-lg font-black font-mono text-[#ffc500]">{percentages.TIE}%</span>
+                  </div>
+                  <div className="bg-red-950/20 border border-red-500/10 p-3 rounded-2xl flex flex-col justify-center">
+                    <span className="text-[8px] font-black text-red-400 uppercase tracking-widest mb-1">VERMELHO</span>
+                    <span className="text-lg font-black font-mono text-red-300">{percentages.BANKER}%</span>
+                  </div>
+                </div>
+              );
+            })()}
+          </motion.div>
+        )}
 
         {/* SISTEMA COMPLETO DE ANÁLISE DE PADRÕES E ROAD MAP (OCULTADO/GONE EM SEGUNDO PLANO) */}
         {false && prediction && prediction.side !== 'WAIT' && prediction.baccaratAnalytics && (

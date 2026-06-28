@@ -717,42 +717,73 @@ export function calculateBaccaratAnalytics(
     sequenceDatabase[seq][nextKey]++;
   }
 
-  // --- MINUTOS DE OURO DO EMPATE (DETERMINÍSTICO E DINÂMICO) ---
+  // --- MINUTOS DE OURO DO EMPATE (DETERMINÍSTICO E DINÂMICO COM CACHE CONSISTENTE) ---
   const now = new Date();
   const currentHour = now.getHours();
   const currentMin = now.getMinutes();
-  
-  const totalTies = history.filter(r => r === 'TIE').length;
-  
-  const tieIndices: number[] = [];
-  for (let i = 0; i < history.length; i++) {
-    if (history[i] === 'TIE') tieIndices.push(i);
-  }
-  let avgGap = 8;
-  if (tieIndices.length >= 2) {
-    const gaps = [];
-    for (let i = 1; i < tieIndices.length; i++) {
-      gaps.push(tieIndices[i] - tieIndices[i - 1]);
+  let goldenMinutes: string[] = [];
+  let isCacheValid = false;
+
+  try {
+    const cachedStr = typeof window !== 'undefined' ? localStorage.getItem('bac_bot_golden_minutes') : null;
+    if (cachedStr) {
+      const cached = JSON.parse(cachedStr);
+      if (cached && cached.minutes && cached.lastMinuteTimestamp && now.getTime() < cached.lastMinuteTimestamp + 60000) {
+        goldenMinutes = cached.minutes;
+        isCacheValid = true;
+      }
     }
-    avgGap = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) || 8;
+  } catch (e) {
+    console.warn("Falha ao recuperar cache de minutos de ouro:", e);
   }
-  
-  // Offsets determinísticos dinâmicos calculados estritamente para o futuro a partir do minuto atual
-  const seed = (totalTies + avgGap * 7) % 7;
-  const offset1 = Math.max(1, 2 + (seed % 3)); // 2 a 4 minutos no futuro
-  const offset2 = offset1 + Math.max(2, 3 + ((seed * 2) % 4)); // 5 a 10 minutos no futuro
-  const offset3 = offset2 + Math.max(2, 3 + ((seed * 3) % 5)); // 10 a 18 minutos no futuro
-  
-  const date1 = new Date(now.getTime() + offset1 * 60 * 1000);
-  const date2 = new Date(now.getTime() + offset2 * 60 * 1000);
-  const date3 = new Date(now.getTime() + offset3 * 60 * 1000);
-  
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const goldenMinutes = [
-    `${pad(date1.getHours())}:${pad(date1.getMinutes())}`,
-    `${pad(date2.getHours())}:${pad(date2.getMinutes())}`,
-    `${pad(date3.getHours())}:${pad(date3.getMinutes())}`
-  ];
+
+  if (!isCacheValid) {
+    const totalTies = history.filter(r => r === 'TIE').length;
+    const tieIndices: number[] = [];
+    for (let i = 0; i < history.length; i++) {
+      if (history[i] === 'TIE') tieIndices.push(i);
+    }
+    let avgGap = 8;
+    if (tieIndices.length >= 2) {
+      const gaps = [];
+      for (let i = 1; i < tieIndices.length; i++) {
+        gaps.push(tieIndices[i] - tieIndices[i - 1]);
+      }
+      avgGap = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) || 8;
+    }
+    
+    // Offsets determinísticos dinâmicos calculados estritamente para o futuro a partir do minuto atual
+    const seed = (totalTies + avgGap * 7) % 7;
+    const offset1 = Math.max(1, 2 + (seed % 3)); // 2 a 4 minutos no futuro
+    const offset2 = offset1 + Math.max(2, 3 + ((seed * 2) % 4)); // 5 a 10 minutos no futuro
+    const offset3 = offset2 + Math.max(2, 3 + ((seed * 3) % 5)); // 10 a 18 minutos no futuro
+    
+    const date1 = new Date(now.getTime() + offset1 * 60 * 1000);
+    const date2 = new Date(now.getTime() + offset2 * 60 * 1000);
+    const date3 = new Date(now.getTime() + offset3 * 60 * 1000);
+    
+    date1.setSeconds(0, 0);
+    date2.setSeconds(0, 0);
+    date3.setSeconds(0, 0);
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    goldenMinutes = [
+      `${pad(date1.getHours())}:${pad(date1.getMinutes())}`,
+      `${pad(date2.getHours())}:${pad(date2.getMinutes())}`,
+      `${pad(date3.getHours())}:${pad(date3.getMinutes())}`
+    ];
+
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('bac_bot_golden_minutes', JSON.stringify({
+          minutes: goldenMinutes,
+          lastMinuteTimestamp: date3.getTime()
+        }));
+      }
+    } catch (e) {
+      console.warn("Falha ao salvar cache de minutos de ouro:", e);
+    }
+  }
 
   // --- ANÁLISE ESTOCÁSTICA DE PADRÕES SAZONAIS ---
   /**
@@ -826,7 +857,8 @@ export function predictNext(
   learnedPatterns: Record<string, Record<string, number>> = {},
   _engineMode: 'STOCHASTIC' | 'RANDOM_FOREST' = 'STOCHASTIC',
   isRecursiveLookahead: boolean = false,
-  roundVelocity: number = 0
+  roundVelocity: number = 0,
+  statsBase: { PLAYER: number; TIE: number; BANKER: number; total: number } | null = null
 ): Prediction {
   if (history.length < 14) {
     return {
@@ -854,6 +886,18 @@ export function predictNext(
   // --- LAYER 3: PREVÊ E CALCULA EMPATE COM ALTA FIDELIDADE ---
   const historyStr = history.map(r => r === 'PLAYER' ? 'P' : r === 'BANKER' ? 'B' : 'T').join('');
   let tieExpectation = 0.135; // Base mathematically accurate tie expectancy (~13.5%)
+
+  // Calibração Dinâmica baseada nos dados estatísticos de mesa informados pelo usuário
+  if (statsBase) {
+    const total = statsBase.PLAYER + statsBase.TIE + statsBase.BANKER || 1;
+    const pctP = statsBase.PLAYER / total;
+    const pctT = statsBase.TIE / total;
+    const pctB = statsBase.BANKER / total;
+
+    score_P += (pctP - 0.45) * 0.4;
+    score_B += (pctB - 0.45) * 0.4;
+    tieExpectation = 0.135 + (pctT - 0.10) * 0.5;
+  }
 
   // A. Tie Clustering (Immediate Attraction)
   if (historyStr.endsWith('T')) {
@@ -989,12 +1033,28 @@ export function predictNext(
       const bCounts = counts['B'] || 0;
       const tCounts = counts['T'] || 0;
       dbCount = pCounts + bCounts + tCounts;
-      if (dbCount >= 2) {
+      if (dbCount >= 1) {
         db_P = pCounts / dbCount;
         db_B = bCounts / dbCount;
         db_T = tCounts / dbCount;
+        
+        // Let's amplify the winner to be fully decisive!
+        if (pCounts > bCounts && pCounts > tCounts) {
+          db_P = 0.95;
+          db_B = 0.025;
+          db_T = 0.025;
+        } else if (bCounts > pCounts && bCounts > tCounts) {
+          db_P = 0.025;
+          db_B = 0.95;
+          db_T = 0.025;
+        } else if (tCounts > pCounts && tCounts > bCounts) {
+          db_P = 0.025;
+          db_B = 0.025;
+          db_T = 0.95;
+        }
+        
         const dbConf = Math.round(Math.max(db_P, db_B) * 100);
-        const dbSideStr = db_B > db_P ? 'VERMELHO' : 'AZUL';
+        const dbSideStr = pCounts > bCounts ? 'AZUL' : 'VERMELHO';
         dbReasoning = `Histórico DB (${dbConf}% p/ ${dbSideStr})`;
       }
     }
@@ -1185,6 +1245,41 @@ export function predictNext(
     } else {
       blended_B += 0.22;
       blended_P = Math.max(0.01, blended_P - 0.22);
+    }
+  }
+
+  // --- DETECTOR DE TENDÊNCIA: REPETIÇÃO VS ALTERNÂNCIA (UPGRADE) ---
+  const nonTieRecent = history.filter(r => r !== 'TIE').slice(-8);
+  let repCount = 0;
+  let altCount = 0;
+  for (let i = 1; i < nonTieRecent.length; i++) {
+    if (nonTieRecent[i] === nonTieRecent[i - 1]) {
+      repCount++;
+    } else {
+      altCount++;
+    }
+  }
+
+  const trendLastNonTieResult = nonTieRecent[nonTieRecent.length - 1];
+  if (trendLastNonTieResult) {
+    if (repCount > altCount) {
+      const repetitionStrength = Math.min(0.35, (repCount - altCount) * 0.08);
+      if (trendLastNonTieResult === 'PLAYER') {
+        blended_P += repetitionStrength;
+        blended_B = Math.max(0.01, blended_B - repetitionStrength);
+      } else if (trendLastNonTieResult === 'BANKER') {
+        blended_B += repetitionStrength;
+        blended_P = Math.max(0.01, blended_P - repetitionStrength);
+      }
+    } else if (altCount > repCount) {
+      const alternationStrength = Math.min(0.35, (altCount - repCount) * 0.08);
+      if (trendLastNonTieResult === 'PLAYER') {
+        blended_B += alternationStrength;
+        blended_P = Math.max(0.01, blended_P - alternationStrength);
+      } else if (trendLastNonTieResult === 'BANKER') {
+        blended_P += alternationStrength;
+        blended_B = Math.max(0.01, blended_B - alternationStrength);
+      }
     }
   }
 
