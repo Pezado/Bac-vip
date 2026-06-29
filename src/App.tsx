@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Zap, 
   Terminal, 
@@ -64,10 +64,15 @@ export default function App() {
     const currB = statsBase.BANKER + extraB;
     const currTotal = currP + currT + currB || 1;
 
+    const pVal = Math.round((currP / currTotal) * 100);
+    const tVal = Math.round((currT / currTotal) * 100);
+    const bVal = Math.round((currB / currTotal) * 100);
+    const diff = 100 - (pVal + tVal + bVal);
+
     return {
-      PLAYER: Number(((currP / currTotal) * 100).toFixed(1)),
-      TIE: Number(((currT / currTotal) * 100).toFixed(1)),
-      BANKER: Number(((currB / currTotal) * 100).toFixed(1))
+      PLAYER: pVal + (diff !== 0 && pVal >= bVal && pVal >= tVal ? diff : 0),
+      TIE: tVal + (diff !== 0 && tVal > pVal && tVal > bVal ? diff : 0),
+      BANKER: bVal + (diff !== 0 && bVal > pVal && bVal >= tVal ? diff : 0)
     };
   };
 
@@ -78,9 +83,9 @@ export default function App() {
       return;
     }
 
-    const p = parseFloat(percentP);
-    const t = parseFloat(percentT);
-    const b = parseFloat(percentB);
+    const p = parseInt(percentP, 10);
+    const t = parseInt(percentT, 10);
+    const b = parseInt(percentB, 10);
 
     if (isNaN(p) || isNaN(t) || isNaN(b)) {
       alert("Por favor, insira valores numéricos válidos nos 3 campos!");
@@ -105,6 +110,7 @@ export default function App() {
     };
 
     setStatsBase(base);
+    localStorage.setItem('bac_bot_stats_base', JSON.stringify(base));
 
     // If we already have 14 or more entries, immediately trigger the calibrated prediction!
     if (history.length >= 14) {
@@ -147,40 +153,8 @@ export default function App() {
     }
   });
   const [prediction, setPrediction] = useState<Prediction | null>(null);
-  const goldenMinutes = useMemo(() => {
-    if (prediction?.baccaratAnalytics?.goldenMinutes) {
-      return prediction.baccaratAnalytics.goldenMinutes;
-    }
-    try {
-      const now = new Date();
-      const cachedStr = typeof window !== 'undefined' ? localStorage.getItem('bac_bot_golden_minutes') : null;
-      if (cachedStr) {
-        const cached = JSON.parse(cachedStr);
-        if (cached && cached.minutes && cached.lastMinuteTimestamp && now.getTime() < cached.lastMinuteTimestamp + 60000) {
-          return cached.minutes as string[];
-        }
-      }
-    } catch (e) {}
-
-    const now = new Date();
-    const seed = (history.filter(r => r === 'TIE').length + 14) % 7;
-    const offset1 = Math.max(1, 2 + (seed % 3));
-    const offset2 = offset1 + Math.max(2, 3 + ((seed * 2) % 4));
-    const offset3 = offset2 + Math.max(2, 3 + ((seed * 3) % 5));
-    
-    const date1 = new Date(now.getTime() + offset1 * 60 * 1000);
-    const date2 = new Date(now.getTime() + offset2 * 60 * 1000);
-    const date3 = new Date(now.getTime() + offset3 * 60 * 1000);
-    
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return [
-      `${pad(date1.getHours())}:${pad(date1.getMinutes())}`,
-      `${pad(date2.getHours())}:${pad(date2.getMinutes())}`,
-      `${pad(date3.getHours())}:${pad(date3.getMinutes())}`
-    ];
-  }, [prediction, history]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [showDisclaimer, setShowDisclaimer] = useState(true);
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
   const [score, setScore] = useState({ wins: 0, losses: 0 });
   const [galeStage, setGaleStage] = useState<number>(0); // 0 = procurando sinal, 1 = Gale 1, 2 = Gale 2
   const [activeSignal, setActiveSignal] = useState<Prediction | null>(null);
@@ -431,47 +405,7 @@ export default function App() {
     }
   }, [prediction, user]);
 
-  // Hook 2: Se o usuário logado NÃO for o ADMIN (942607599), subscreve em tempo real ao histórico e à previsão do Admin
-  useEffect(() => {
-    if (!user || user.phone === ADMIN_PHONE) return;
 
-    // Subscrever ao histórico de rodadas do Admin
-    const adminHistoryRef = ref(rtdb, `BAC-BOT/users/${ADMIN_PHONE}/rounds_history`);
-    const unsubHistory = onValue(adminHistoryRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const val = snapshot.val();
-        if (typeof val === 'string') {
-          const parsed = val.split(',')
-            .map(s => s.trim().toUpperCase())
-            .map(s => {
-              if (s === 'P' || s === 'PLAYER' || s === 'AZUL') return 'PLAYER';
-              if (s === 'B' || s === 'BANKER' || s === 'VERMELHO') return 'BANKER';
-              if (s === 'T' || s === 'TIE' || s === 'EMPATE') return 'TIE';
-              return null;
-            })
-            .filter((r): r is Result => r !== null);
-          setHistory(parsed);
-        } else if (Array.isArray(val)) {
-          setHistory(val);
-        }
-      }
-    });
-
-    // Subscrever à previsão ativa do Admin
-    const adminPredRef = ref(rtdb, `BAC-BOT/users/${ADMIN_PHONE}/active_prediction`);
-    const unsubPred = onValue(adminPredRef, (snapshot) => {
-      if (snapshot.exists()) {
-        setPrediction(snapshot.val());
-      } else {
-        setPrediction(null);
-      }
-    });
-
-    return () => {
-      unsubHistory();
-      unsubPred();
-    };
-  }, [user]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -834,20 +768,8 @@ export default function App() {
           <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-transparent via-yellow-500 to-transparent" />
           
           <div className="text-center space-y-4">
-            <div className="w-24 h-24 mx-auto rounded-[2.25rem] overflow-hidden border border-yellow-500/30 p-1 bg-zinc-950 flex items-center justify-center shadow-xl group">
-              <img 
-                src={remoteConfig.foto || "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp"} 
-                alt="BAC BOT LOGO" 
-                className="w-full h-full object-cover rounded-[1.75rem] group-hover:scale-105 transition-transform"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp";
-                }}
-              />
-            </div>
-            <h1 className="text-4xl font-black tracking-tighter text-white uppercase italic">BAC BOT</h1>
-            <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Acesse o Terminal de Dados</p>
+            <h1 className="text-3xl font-black tracking-tighter text-white uppercase italic">Acessar Terminal</h1>
+            <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Insira os dados da sua conta</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
@@ -966,17 +888,8 @@ export default function App() {
           animate={{ opacity: 1, scale: 1 }}
           className="w-full max-w-md bg-zinc-900/80 border border-yellow-500/20 rounded-[3.5rem] p-12 text-center space-y-8 shadow-[0_30px_100px_rgba(245,158,11,0.15)] relative"
         >
-          <div className="w-24 h-24 mx-auto rounded-[2.5rem] overflow-hidden border border-yellow-500/30 p-1 bg-zinc-950 flex items-center justify-center shadow-xl relative animate-pulse">
-            <img 
-              src={remoteConfig.foto || "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp"} 
-              alt="BAC BOT LOGO" 
-              className="w-full h-full object-cover rounded-[2.25rem]"
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                e.currentTarget.onerror = null;
-                e.currentTarget.src = "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp";
-              }}
-            />
+          <div className="w-24 h-24 mx-auto rounded-[2.5rem] bg-yellow-500/10 border border-yellow-500/20 flex items-center justify-center shadow-xl relative animate-pulse">
+            <AlertCircle className="text-yellow-500" size={48} />
           </div>
           <div className="space-y-4">
             <h2 className="text-3xl font-black text-white tracking-tighter uppercase italic">Manutenção Ativa</h2>
@@ -1059,25 +972,13 @@ export default function App() {
           {/* Glowing Ambient light background */}
           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-80 h-40 bg-gradient-to-b from-yellow-500/10 to-transparent blur-3xl pointer-events-none" />
 
-          {/* Logo & Icon Header */}
-          <div className="relative mx-auto w-24 h-24 rounded-[2rem] border border-white/15 p-1 bg-zinc-900 flex items-center justify-center shadow-2xl overflow-hidden group">
-            <img 
-              src={remoteConfig.foto || "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp"} 
-              alt="BAC BOT LOGO" 
-              className="w-full h-full object-cover rounded-[1.75rem]"
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                e.currentTarget.onerror = null;
-                e.currentTarget.src = "https://i.ibb.co/qMK7k8fW/IMG-20260604-WA2608.webp";
-              }}
-            />
-            <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-zinc-950 rounded-full border-4 border-zinc-950 flex items-center justify-center">
-              {isExpired ? (
-                <Lock className="text-red-500 animate-pulse" size={14} />
-              ) : (
-                <Clock className="text-yellow-500 animate-pulse" size={14} />
-              )}
-            </div>
+          {/* Icon Header */}
+          <div className="relative mx-auto w-24 h-24 rounded-[2.5rem] bg-yellow-500/10 border border-yellow-500/20 flex items-center justify-center shadow-xl relative">
+            {isExpired ? (
+              <Lock className="text-red-500 animate-pulse" size={48} />
+            ) : (
+              <AlertCircle className="text-yellow-500 animate-pulse" size={48} />
+            )}
           </div>
 
           {/* Status Badge */}
@@ -1089,16 +990,16 @@ export default function App() {
           {/* Title & Educacional/Persuasivo message */}
           <div className="space-y-3">
             <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight uppercase italic">
-              {isExpired ? 'Licença VIP Expirada' : 'Acesso Restrito - Apenas VIP'}
+              {isExpired ? 'Acesso Expirado' : 'Acesso Restrito'}
             </h2>
             
             {isExpired ? (
               <p className="text-zinc-400 text-sm leading-relaxed max-w-md mx-auto">
-                Sua licença premium do <span className="text-yellow-500 font-bold">BAC-BOT</span> expirou. Nosso robô continua identificando ciclos de alta probabilidade, padrões de gales calibrados e sequências vencedoras em tempo real, mas sua transmissão privada foi desativada. <span className="text-zinc-200">Renove sua chave de acesso VIP para voltar a receber as direções instantâneas combinadas e não perder as próximas oportunidades de lucro!</span>
+                Sua licença expirou. Nosso robô continua identificando ciclos de alta probabilidade em tempo real, mas sua transmissão privada foi desativada. <span className="text-zinc-200">Renove sua chave de acesso para voltar a receber as direções instantâneas combinadas!</span>
               </p>
             ) : (
               <p className="text-zinc-400 text-sm leading-relaxed max-w-md mx-auto">
-                Seu cadastro no <span className="text-yellow-500 font-bold">BAC-BOT</span> foi recebido com sucesso! O nosso algoritmo de alta performance utiliza múltiplos servidores de inteligência para processar padrões estocásticos com mais de 95% de assertividade geral. <span className="text-zinc-200">Para garantir máxima latência e processamento dedicado aos membros, o acesso ao terminal é restrito. Adquira sua licença VIP agora e destrave as operações!</span>
+                Seu cadastro foi recebido! O nosso algoritmo de alta performance utiliza múltiplos servidores de inteligência para processar padrões estocásticos com excelente assertividade. <span className="text-zinc-200">Para garantir processamento dedicado aos membros, o acesso ao terminal é restrito. Adquira sua licença para destravar as operações!</span>
               </p>
             )}
           </div>
@@ -1186,25 +1087,28 @@ export default function App() {
         <header className="flex flex-col gap-4 bg-zinc-900/40 backdrop-blur-xl p-5 rounded-[2.5rem] border border-white/10 shadow-2xl relative overflow-hidden">
           <div className="absolute top-0 w-1/2 h-0.5 bg-gradient-to-r from-transparent via-yellow-500/70 to-transparent" />
           
-          {/* Primeiro Linear - Lema e Minutos do Empate */}
-          <div className="w-full flex flex-col items-center text-center space-y-3.5">
-            <p className="text-[11px] font-black uppercase tracking-[0.25em] bg-gradient-to-r from-yellow-400 via-pink-500 to-indigo-400 bg-clip-text text-transparent leading-none">
+          {/* Primeiro Linear - Centralizado o Lema */}
+          <div className="w-full flex flex-col items-center text-center">
+            <p className="text-[10px] font-black uppercase tracking-[0.25em] bg-gradient-to-r from-yellow-400 via-pink-500 to-indigo-400 bg-clip-text text-transparent leading-none">
               "O BOT QUE DÁ COR À TUA VIDA"
             </p>
-            
-            <div className="w-full bg-gradient-to-r from-yellow-500/5 via-amber-500/10 to-yellow-500/5 border border-yellow-500/15 p-3 rounded-2xl flex flex-col items-center text-center">
-              <span className="text-[9px] font-black text-yellow-500 uppercase tracking-[0.2em] mb-2">
+          </div>
+
+          {/* Segundo Linear - Minutos do empate resumido (apenas título e os minutos, sem explicação) */}
+          {prediction?.baccaratAnalytics?.goldenMinutes && (
+            <div className="w-full bg-gradient-to-r from-yellow-500/5 via-amber-500/10 to-yellow-500/5 border border-yellow-500/15 p-2.5 rounded-2xl flex flex-col items-center text-center">
+              <span className="text-[9px] font-black text-yellow-500 uppercase tracking-[0.2em] mb-1.5">
                 🌟 MINUTOS DO EMPATE
               </span>
               <div className="flex gap-2 w-full justify-center">
-                {goldenMinutes.map((time, idx) => (
-                  <div key={idx} className="bg-black/55 border border-yellow-500/10 px-4 py-2 rounded-xl font-mono font-black text-xs text-yellow-400 tracking-wider shadow-inner">
+                {prediction.baccaratAnalytics.goldenMinutes.map((time, idx) => (
+                  <div key={`golden-hdr-${idx}-${time}`} className="bg-black/50 border border-yellow-500/10 px-3.5 py-1.5 rounded-xl font-mono font-black text-xs text-yellow-400 tracking-wider">
                     {time}
                   </div>
                 ))}
               </div>
             </div>
-          </div>
+          )}
         </header>
 
         {/* Banner do MODO LIBERADO temporário com countdown */}
@@ -1223,6 +1127,8 @@ export default function App() {
           
           <div className="relative z-10 flex flex-col items-center text-center space-y-5">
             <div className="space-y-4 w-full">
+
+
               <h2 
                 key={`${prediction?.side || 'none'}_${galeStage}_${isAnalyzing}`}
                 className={`transition-all duration-300 drop-shadow-[0_15px_30px_rgba(0,0,0,0.4)] w-full ${
@@ -1231,21 +1137,9 @@ export default function App() {
               >
                 {isAnalyzing ? (
                   <div className="flex flex-col items-center justify-center py-4 w-full">
-                    {history.length < 3 ? (
-                      <>
-                        <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-zinc-500 uppercase">
-                          🚨 AGUARDANDO 🚨
-                          <br />
-                          🚨 ENTRADAS 🚨
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
-                          🚨 analisando...🚨
-                        </span>
-                      </>
-                    )}
+                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
+                      🚨 analisando...🚨
+                    </span>
                     
                     {/* Sequência real-time stats only if bot has chart data (history.length > 0) */}
                     {history.length > 0 && (
@@ -1269,28 +1163,6 @@ export default function App() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
-                    </div>
-                  </div>
-                ) : (history.length >= 14 && statsBase === null) ? (
-                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
-                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
-                      📊 AGUARDANDO 📊
-                      <br />
-                      📊 CALIBRAÇÃO 📊
-                    </span>
-                    <p className="text-zinc-400 font-sans text-center text-xs uppercase tracking-wider max-w-[320px] leading-relaxed mx-auto">
-                      Insira as percentagens do gráfico abaixo para calibrar o algoritmo de inteligência e liberar a previsão.
-                    </p>
-                  </div>
-                ) : (history.length < 14) ? (
-                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
-                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500/70 uppercase">
-                      🚨 AGUARDANDO 🚨
-                      <br />
-                      🚨 ENTRADAS 🚨
-                    </span>
-                    <div className="inline-flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-4 py-1.5 rounded-full text-[11px] font-black uppercase tracking-[0.2em] text-yellow-500">
-                      Sincronize o Gráfico: {history.length}/14
                     </div>
                   </div>
                 ) : isWaitingNextResult ? (
@@ -1382,7 +1254,18 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                ) : (prediction?.side === 'WAIT') ? (
+                ) : (history.length >= 14 && statsBase === null) ? (
+                  <div className="flex flex-col items-center justify-center py-6 w-full text-center space-y-4">
+                    <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
+                      📊 AGUARDANDO 📊
+                      <br />
+                      📊 CALIBRAÇÃO 📊
+                    </span>
+                    <p className="text-zinc-400 font-sans text-center text-xs uppercase tracking-wider max-w-[320px] leading-relaxed mx-auto">
+                      Insira as percentagens do gráfico abaixo para calibrar o algoritmo de inteligência e liberar a previsão.
+                    </p>
+                  </div>
+                ) : (prediction?.side === 'WAIT' || history.length < 14) ? (
                   <div className="flex flex-col items-center justify-center py-4 w-full">
                     <span className="block text-2xl xs:text-3xl font-black leading-tight tracking-wider text-yellow-500 uppercase animate-pulse">
                       🚨 analisando...🚨
@@ -1487,7 +1370,7 @@ export default function App() {
                   <label className="text-[8px] font-black text-blue-400 uppercase tracking-widest text-left ml-1">Azul (P) %</label>
                   <input 
                     type="number" 
-                    step="0.1"
+                    step="1"
                     min="0"
                     max="100"
                     required
@@ -1501,7 +1384,7 @@ export default function App() {
                   <label className="text-[8px] font-black text-yellow-500 uppercase tracking-widest text-left ml-1">Empate (T) %</label>
                   <input 
                     type="number" 
-                    step="0.1"
+                    step="1"
                     min="0"
                     max="100"
                     required
@@ -1515,7 +1398,7 @@ export default function App() {
                   <label className="text-[8px] font-black text-red-400 uppercase tracking-widest text-left ml-1">Vermelho (B) %</label>
                   <input 
                     type="number" 
-                    step="0.1"
+                    step="1"
                     min="0"
                     max="100"
                     required
@@ -1617,7 +1500,7 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0, scale: 0 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  key={`${i}-${res}`}
+                  key={`bead-${i}-${res}`}
                   className={`w-6 h-6 rounded-full flex items-center justify-center text-[8px] font-black shadow-lg shrink-0 ${
                     res === 'BANKER' ? 'bg-red-600 shadow-red-900/40' : 
                     res === 'PLAYER' ? 'bg-blue-600 shadow-blue-900/40' : 
@@ -1629,7 +1512,7 @@ export default function App() {
               ))}
               {history.length === 0 && (
                 <div className="h-full flex items-center justify-center w-full min-w-[200px] text-zinc-700 text-[9px] font-black uppercase tracking-widest italic">
-                  Sincronize 14 velas...
+                  Aguardando Resultados...
                 </div>
               )}
             </div>
@@ -1652,9 +1535,7 @@ export default function App() {
               <button 
                 onClick={() => {
                   setStatsBase(null);
-                  setPercentP('');
-                  setPercentT('');
-                  setPercentB('');
+                  localStorage.removeItem('bac_bot_stats_base');
                 }}
                 className="text-[8px] font-black text-red-400 hover:text-red-300 uppercase tracking-widest transition-colors flex items-center gap-1 cursor-pointer"
               >
@@ -1707,7 +1588,7 @@ export default function App() {
                 </p>
                 <div className="flex gap-2.5">
                   {prediction.baccaratAnalytics.goldenMinutes.map((time, idx) => (
-                    <div key={idx} className="flex-1 bg-black/60 border border-yellow-500/20 p-2.5 rounded-xl text-center shadow-inner">
+                    <div key={`golden-detail-${idx}-${time}`} className="flex-1 bg-black/60 border border-yellow-500/20 p-2.5 rounded-xl text-center shadow-inner">
                       <span className="text-[8px] font-black text-zinc-500 uppercase block">Minuto {idx + 1}</span>
                       <span className="text-sm font-black font-mono text-yellow-400 tracking-wider">{time}</span>
                     </div>
@@ -1823,7 +1704,7 @@ export default function App() {
                   {Object.entries(prediction.baccaratAnalytics.sequenceDatabase).slice(-6).map(([pattern, transitions], idx) => {
                     const trans = transitions as { B: number; P: number; T: number };
                     return (
-                      <div key={idx} className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors px-1 text-[11px]">
+                      <div key={`seq-db-${pattern}-${idx}`} className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors px-1 text-[11px]">
                         <span className="text-purple-400 font-black">{pattern}</span>
                         <span className="text-zinc-600">➔</span>
                         <span className="text-yellow-400 font-semibold uppercase">
@@ -1843,7 +1724,7 @@ export default function App() {
               </span>
               <div className="grid grid-cols-1 gap-2 max-h-[170px] overflow-y-auto pr-1 scrollbar-hide">
                 {prediction.baccaratAnalytics.patternVerificationList.map((p, idx) => (
-                  <div key={idx} className="bg-black/30 border border-white/5 p-3 rounded-xl flex items-start justify-between gap-3">
+                  <div key={`pattern-verify-${p.name}-${idx}`} className="bg-black/30 border border-white/5 p-3 rounded-xl flex items-start justify-between gap-3">
                     <div className="space-y-0.5">
                       <p className="text-[10px] font-black text-zinc-200 uppercase">{p.name}</p>
                       <p className="text-[9px] text-zinc-500 leading-snug uppercase">{p.description}</p>
@@ -1972,7 +1853,7 @@ export default function App() {
                     <div className="flex gap-1 overflow-x-auto py-1 scrollbar-hide">
                       {roadsData.bigEyeBoy.map((color, idx) => (
                         <span 
-                          key={idx} 
+                          key={`bigeyeboy-${idx}-${color}`} 
                           className={`w-2.5 h-2.5 rounded-full shrink-0 border border-white/5 ${
                             color === 'RED' ? 'bg-red-500 shadow-md shadow-red-500/20' : 'bg-blue-500 shadow-md shadow-blue-500/20'
                           }`} 
@@ -1993,7 +1874,7 @@ export default function App() {
                     <div className="flex gap-1 overflow-x-auto py-1 scrollbar-hide">
                       {roadsData.smallRoad.map((color, idx) => (
                         <span 
-                          key={idx} 
+                          key={`smallroad-${idx}-${color}`} 
                           className={`w-1.5 h-1.5 rounded-full shrink-0 border border-white/5 ${
                             color === 'RED' ? 'bg-red-500 shadow-sm shadow-red-500/10' : 'bg-blue-500 shadow-sm shadow-blue-500/10'
                           }`} 
@@ -2014,10 +1895,10 @@ export default function App() {
               <div className="w-full overflow-x-auto scrollbar-hide pb-2">
                 <div className="flex flex-row gap-1.5 min-w-max">
                   {roadsData.bigRoad.map((col, colIdx) => (
-                    <div key={colIdx} className="flex flex-col gap-1.5">
+                    <div key={`bigroad-col-${colIdx}`} className="flex flex-col gap-1.5">
                       {col.map((cell, rowIdx) => (
                         <div 
-                          key={rowIdx} 
+                          key={`bigroad-cell-${colIdx}-${rowIdx}-${cell.result}`} 
                           className={`w-6 h-6 rounded-full border flex items-center justify-center relative shrink-0 transition-all ${
                             cell.result === 'BANKER' 
                               ? 'border-red-500/40 bg-red-950/30' 
@@ -2035,7 +1916,7 @@ export default function App() {
                       {/* Empty placeholder block to keep standard vertical grid height of 6 cells if column has fewer cells */}
                       {Array.from({ length: Math.max(0, 6 - col.length) }).map((_, emptyIdx) => (
                         <div 
-                          key={`empty-${emptyIdx}`} 
+                          key={`bigroad-empty-${colIdx}-${emptyIdx}`} 
                           className="w-6 h-6 rounded-full border border-zinc-900/10 bg-transparent shrink-0" 
                         />
                       ))}
@@ -2052,81 +1933,48 @@ export default function App() {
 
       </main>
 
-      <AnimatePresence>
-        {showDisclaimer && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[1000] bg-[#020205]/95 backdrop-blur-2xl flex items-center justify-center p-8"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="max-w-md bg-zinc-900 border border-white/10 rounded-[3.5rem] p-12 space-y-8 shadow-[0_0_150px_rgba(245,158,11,0.15)] text-center relative overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-transparent via-yellow-500 to-transparent" />
-              <div className="w-24 h-24 bg-yellow-500/10 rounded-[2rem] flex items-center justify-center mx-auto mb-6 border border-yellow-500/20">
-                <AlertCircle className="text-yellow-500" size={48} />
-              </div>
-              <div className="space-y-4">
-                <h2 className="text-3xl font-black text-white tracking-tighter uppercase italic drop-shadow-lg">Acesso Terminal</h2>
-                <p className="text-[13px] text-zinc-400 font-medium leading-relaxed">
-                  Terminal de análise de alta precisão BAC-BOT. 
-                  Sistemas sincronizados com fluxo de dados em tempo real. 
-                  <br /><br />
-                  <span className="text-yellow-500/80 font-black uppercase tracking-widest text-[10px]">Aviso: Jogo Responsável 18+</span>
-                </p>
-              </div>
-              <button 
-                onClick={() => setShowDisclaimer(false)}
-                className="w-full py-6 bg-gradient-to-r from-yellow-600 via-amber-500 to-yellow-400 text-black font-black uppercase tracking-[0.3em] rounded-2xl hover:brightness-110 active:scale-95 transition-all shadow-[0_15px_40px_rgba(245,158,11,0.3)] mb-2"
-              >
-                Ativar Terminal
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
+
 
         {/* Real-time Automated Dialogue Popup */}
-        {remoteConfig?.dialog?.ativo && dismissedDialog !== (remoteConfig.dialog.titulo + "::" + remoteConfig.dialog.mensagem) && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in"
-          >
+        <AnimatePresence>
+          {remoteConfig?.dialog?.ativo && dismissedDialog !== (remoteConfig.dialog.titulo + "::" + remoteConfig.dialog.mensagem) && (
             <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              className="w-full max-w-md bg-zinc-900 border border-white/10 rounded-[3rem] p-8 text-center space-y-6 shadow-2xl relative overflow-hidden"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in"
             >
-              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-yellow-500 via-amber-400 to-yellow-600" />
-              
-              <div className="w-16 h-16 bg-yellow-500/10 rounded-2xl flex items-center justify-center mx-auto border border-yellow-500/20">
-                <AlertCircle className="text-yellow-500 animate-pulse" size={32} />
-              </div>
-              
-              <div className="space-y-2">
-                <h3 className="text-xl font-black text-white uppercase tracking-tight">
-                  {remoteConfig.dialog.titulo || "Informativo"}
-                </h3>
-                <p className="text-zinc-400 text-xs font-medium leading-relaxed">
-                  {remoteConfig.dialog.mensagem || "Mensagem de diálogo automática remota."}
-                </p>
-              </div>
-
-              <button 
-                onClick={() => setDismissedDialog(remoteConfig.dialog.titulo + "::" + remoteConfig.dialog.mensagem)}
-                className="w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-black uppercase tracking-widest text-[10px] rounded-xl transition-all active:scale-95 border border-white/5 shadow-md"
+              <motion.div 
+                initial={{ scale: 0.9, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.9, y: 20 }}
+                className="w-full max-w-md bg-zinc-900 border border-white/10 rounded-[3rem] p-8 text-center space-y-6 shadow-2xl relative overflow-hidden"
               >
-                Entendido
-              </button>
+                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-yellow-500 via-amber-400 to-yellow-600" />
+                
+                <div className="w-16 h-16 bg-yellow-500/10 rounded-2xl flex items-center justify-center mx-auto border border-yellow-500/20">
+                  <AlertCircle className="text-yellow-500 animate-pulse" size={32} />
+                </div>
+                
+                <div className="space-y-2">
+                  <h3 className="text-xl font-black text-white uppercase tracking-tight">
+                    {remoteConfig.dialog.titulo || "Informativo"}
+                  </h3>
+                  <p className="text-zinc-400 text-xs font-medium leading-relaxed">
+                    {remoteConfig.dialog.mensagem || "Mensagem de diálogo automática remota."}
+                  </p>
+                </div>
+
+                <button 
+                  onClick={() => setDismissedDialog(remoteConfig.dialog.titulo + "::" + remoteConfig.dialog.mensagem)}
+                  className="w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-black uppercase tracking-widest text-[10px] rounded-xl transition-all active:scale-95 border border-white/5 shadow-md"
+                >
+                  Entendido
+                </button>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>
     </div>
   );
 }

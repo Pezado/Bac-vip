@@ -984,13 +984,48 @@ export function predictNext(
   let catalog_B = 0.50;
   let catalog_T = 0.14;
   let matchedPatternStr = "";
+  let isPatternContradictedByStats = false;
 
   const allAvailablePredict = [...CATALOG_PATTERNS, ...getParsedPatterns()];
   const sortedPatterns = allAvailablePredict.sort((a, b) => b.seq.length - a.seq.length);
   for (const p of sortedPatterns) {
     if (historyStr.endsWith(p.seq)) {
       matchedPatternStr = p.seq;
-      const lengthWeight = 0.4 + (p.seq.length * 0.12);
+      let lengthWeight = 0.4 + (p.seq.length * 0.12);
+      
+      // COGNITIVE FILTER: Analyze if it makes sense to follow the pattern based on other active elements
+      const lastOutcome = history[history.length - 1];
+      const isPatternSuggestingRepetition = (p.pred === lastOutcome);
+      
+      // 1. Check active streak count
+      let currentStreak = 0;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i] === 'TIE') continue;
+        if (history[i] === lastOutcome) currentStreak++;
+        else break;
+      }
+      
+      // If there's a strong streak and the pattern is trying to blindly break it
+      if (currentStreak >= 4 && !isPatternSuggestingRepetition) {
+        isPatternContradictedByStats = true;
+        lengthWeight *= 0.5; // Cut pattern influence by 50%
+      }
+      
+      // 2. Consult table stats base
+      if (statsBase) {
+        const total = statsBase.PLAYER + statsBase.TIE + statsBase.BANKER || 1;
+        const pctP = statsBase.PLAYER / total;
+        const pctB = statsBase.BANKER / total;
+        
+        if (p.pred === 'PLAYER' && pctP < 0.38) {
+          isPatternContradictedByStats = true;
+          lengthWeight *= 0.5;
+        } else if (p.pred === 'BANKER' && pctB < 0.38) {
+          isPatternContradictedByStats = true;
+          lengthWeight *= 0.5;
+        }
+      }
+
       if (p.pred === 'PLAYER') {
         catalog_P += lengthWeight;
         catalog_B -= lengthWeight * 0.5;
@@ -1034,27 +1069,13 @@ export function predictNext(
       const tCounts = counts['T'] || 0;
       dbCount = pCounts + bCounts + tCounts;
       if (dbCount >= 1) {
-        db_P = pCounts / dbCount;
-        db_B = bCounts / dbCount;
-        db_T = tCounts / dbCount;
-        
-        // Let's amplify the winner to be fully decisive!
-        if (pCounts > bCounts && pCounts > tCounts) {
-          db_P = 0.95;
-          db_B = 0.025;
-          db_T = 0.025;
-        } else if (bCounts > pCounts && bCounts > tCounts) {
-          db_P = 0.025;
-          db_B = 0.95;
-          db_T = 0.025;
-        } else if (tCounts > pCounts && tCounts > bCounts) {
-          db_P = 0.025;
-          db_B = 0.025;
-          db_T = 0.95;
-        }
+        // Laplace smoothed probability representation to prevent artificial 1% simulated outputs
+        db_P = (pCounts + 1) / (dbCount + 3);
+        db_B = (bCounts + 1) / (dbCount + 3);
+        db_T = (tCounts + 1) / (dbCount + 3);
         
         const dbConf = Math.round(Math.max(db_P, db_B) * 100);
-        const dbSideStr = pCounts > bCounts ? 'AZUL' : 'VERMELHO';
+        const dbSideStr = pCounts >= bCounts ? 'AZUL' : 'VERMELHO';
         dbReasoning = `Histórico DB (${dbConf}% p/ ${dbSideStr})`;
       }
     }
@@ -1153,28 +1174,36 @@ export function predictNext(
   // Definimos os pesos de blendagem garantindo que o peso do RNG (Monte Carlo / MC) represente estritamente 5% de peso!
   const wMC = 0.05; // RNG estritamente limitado a 5% de peso!
   
-  // Os outros 95% de peso são alocados entre as análises reais do gráfico a partir dos botões
+  // Os outros 95% de peso são alocados entre as análises reais do gráfico a partir dos botões e as percentagens da mesa (statsBase)
   const remainingWeight = 0.95;
-  const wCatalog = matchedPatternStr ? 0.45 : 0.25;
-  const wDB = dbCount >= 4 ? 0.35 : (dbCount >= 2 ? 0.25 : 0.15);
-  const wRF = (rfResult.nextValue !== 'WAIT' && rfAcc >= 0.60) ? 0.20 : 0.10;
+  const wStatsBase = 0.25; // 25% weight dedicated strictly to table percentages/stats base!
+  const wCatalog = matchedPatternStr ? 0.35 : 0.20;
+  const wDB = dbCount >= 4 ? 0.25 : (dbCount >= 2 ? 0.15 : 0.10);
+  const wRF = (rfResult.nextValue !== 'WAIT' && rfAcc >= 0.60) ? 0.15 : 0.08;
   
-  const sumWeightsPB = wCatalog + wDB + wRF;
+  const sumWeightsPB = wCatalog + wDB + wRF + wStatsBase;
   const normWeightMultiplier = remainingWeight / (sumWeightsPB || 1);
   
   const finalWCatalog = wCatalog * normWeightMultiplier;
   const finalWDB = wDB * normWeightMultiplier;
   const finalWRF = wRF * normWeightMultiplier;
+  const finalWStats = wStatsBase * normWeightMultiplier;
 
   // Calculamos a probabilidade normalizada do catálogo
   const totalCatalog = catalog_P + catalog_B || 1;
   const catalogP_norm = catalog_P / totalCatalog;
   const catalogB_norm = catalog_B / totalCatalog;
 
+  // Normalizamos score_P e score_B (que representam a percentagem da mesa/gráfico calibrado)
+  const sumScore = score_P + score_B || 1;
+  const scoreP_norm = score_P / sumScore;
+  const scoreB_norm = score_B / sumScore;
+
   // Blending final combinando a lógica do Construtivismo (Piaget), Behaviorismo e Aprendizagem Social
   let blended_P = (catalogP_norm * finalWCatalog * piagetCorrectionP) + 
                   (db_P * finalWDB) + 
                   (rf_P * finalWRF) + 
+                  (scoreP_norm * finalWStats) + 
                   (mc_P * wMC) + 
                   behaviorismForceP + 
                   socialLearningInfluenceP;
@@ -1182,6 +1211,7 @@ export function predictNext(
   let blended_B = (catalogB_norm * finalWCatalog * piagetCorrectionB) + 
                   (db_B * finalWDB) + 
                   (rf_B * finalWRF) + 
+                  (scoreB_norm * finalWStats) + 
                   (mc_B * wMC) + 
                   behaviorismForceB + 
                   socialLearningInfluenceB;
@@ -1205,19 +1235,19 @@ export function predictNext(
     blended_P -= blended_P * correctionForce;
   }
 
-  // Double Check Saturação Extrema: Streak controls
+  // Double Check Saturação Extrema: Streak controls (proportional multiplicative adjustment)
   if (historyStr.endsWith('PPPP')) {
-    blended_B += 0.35;
-    blended_P -= 0.35;
+    blended_B *= 1.4;
+    blended_P *= 0.6;
   } else if (historyStr.endsWith('BBBB')) {
-    blended_P += 0.35;
-    blended_B -= 0.35;
+    blended_P *= 1.4;
+    blended_B *= 0.6;
   } else if (historyStr.endsWith('PPPPP')) {
-    blended_B += 0.50;
-    blended_P -= 0.50;
+    blended_B *= 1.8;
+    blended_P *= 0.4;
   } else if (historyStr.endsWith('BBBBB')) {
-    blended_P += 0.50;
-    blended_B -= 0.50;
+    blended_P *= 1.8;
+    blended_B *= 0.4;
   }
 
   // Segment alternation (chop) protection
@@ -1240,11 +1270,11 @@ export function predictNext(
     }
     const chopTarget = lastNonTie === 'PLAYER' ? 'BANKER' : 'PLAYER';
     if (chopTarget === 'PLAYER') {
-      blended_P += 0.22;
-      blended_B = Math.max(0.01, blended_B - 0.22);
+      blended_P *= 1.3;
+      blended_B *= 0.7;
     } else {
-      blended_B += 0.22;
-      blended_P = Math.max(0.01, blended_P - 0.22);
+      blended_B *= 1.3;
+      blended_P *= 0.7;
     }
   }
 
@@ -1263,22 +1293,24 @@ export function predictNext(
   const trendLastNonTieResult = nonTieRecent[nonTieRecent.length - 1];
   if (trendLastNonTieResult) {
     if (repCount > altCount) {
-      const repetitionStrength = Math.min(0.35, (repCount - altCount) * 0.08);
+      const repetitionMultiplier = 1 + Math.min(0.35, (repCount - altCount) * 0.08);
+      const counterMultiplier = 1 / repetitionMultiplier;
       if (trendLastNonTieResult === 'PLAYER') {
-        blended_P += repetitionStrength;
-        blended_B = Math.max(0.01, blended_B - repetitionStrength);
+        blended_P *= repetitionMultiplier;
+        blended_B *= counterMultiplier;
       } else if (trendLastNonTieResult === 'BANKER') {
-        blended_B += repetitionStrength;
-        blended_P = Math.max(0.01, blended_P - repetitionStrength);
+        blended_B *= repetitionMultiplier;
+        blended_P *= counterMultiplier;
       }
     } else if (altCount > repCount) {
-      const alternationStrength = Math.min(0.35, (altCount - repCount) * 0.08);
+      const alternationMultiplier = 1 + Math.min(0.35, (altCount - repCount) * 0.08);
+      const counterMultiplier = 1 / alternationMultiplier;
       if (trendLastNonTieResult === 'PLAYER') {
-        blended_B += alternationStrength;
-        blended_P = Math.max(0.01, blended_P - alternationStrength);
+        blended_B *= alternationMultiplier;
+        blended_P *= counterMultiplier;
       } else if (trendLastNonTieResult === 'BANKER') {
-        blended_P += alternationStrength;
-        blended_B = Math.max(0.01, blended_B - alternationStrength);
+        blended_P *= alternationMultiplier;
+        blended_B *= counterMultiplier;
       }
     }
   }
@@ -1306,22 +1338,23 @@ export function predictNext(
       if (roundVelocity > 0 && roundVelocity < 15) {
         // Fast round velocity: dragons are highly likely to keep running
         if (roads.dragonSide === 'PLAYER') {
-          blended_P += 0.15;
-          blended_B = Math.max(0.01, blended_B - 0.10);
+          blended_P *= 1.25;
+          blended_B *= 0.8;
         } else {
-          blended_B += 0.15;
-          blended_P = Math.max(0.01, blended_P - 0.10);
+          blended_B *= 1.25;
+          blended_P *= 0.8;
         }
         velocityAdjustmentLabel = `Dragão Rápido [${dragonLength}x o ${roads.dragonSide === 'PLAYER' ? 'AZUL' : 'VERMELHO'}]`;
       } else {
         // Normal or slow speed: play the reversal expectation
-        const reversalStrength = dragonLength >= 8 ? 0.35 : (dragonLength >= 7 ? 0.25 : 0.15);
+        const reversalMultiplier = dragonLength >= 8 ? 1.5 : (dragonLength >= 7 ? 1.35 : 1.2);
+        const counterMultiplier = 1 / reversalMultiplier;
         if (oppositeSide === 'PLAYER') {
-          blended_P += reversalStrength;
-          blended_B = Math.max(0.01, blended_B - reversalStrength);
+          blended_P *= reversalMultiplier;
+          blended_B *= counterMultiplier;
         } else {
-          blended_B += reversalStrength;
-          blended_P = Math.max(0.01, blended_P - reversalStrength);
+          blended_B *= reversalMultiplier;
+          blended_P *= counterMultiplier;
         }
         velocityAdjustmentLabel = `Cansaço do Dragão [Reversão oposta ao ${roads.dragonSide === 'PLAYER' ? 'AZUL' : 'VERMELHO'}]`;
         
@@ -1339,22 +1372,22 @@ export function predictNext(
     if (roundVelocity > 0 && roundVelocity < 15) {
       // Fast speed: ping-pong continues
       if (nextPingPongSide === 'PLAYER') {
-        blended_P += 0.20;
-        blended_B = Math.max(0.01, blended_B - 0.15);
+        blended_P *= 1.3;
+        blended_B *= 0.7;
       } else {
-        blended_B += 0.20;
-        blended_P = Math.max(0.01, blended_P - 0.15);
+        blended_B *= 1.3;
+        blended_P *= 0.7;
       }
       velocityAdjustmentLabel = `Ping-Pong Rápido [Alternância de ${roads.pingPongLength}x]`;
     } else if (roundVelocity > 25) {
       // Slow speed: ping-pong breaks to form a doublet
       const breakSide = lastNonTieResult;
       if (breakSide === 'PLAYER') {
-        blended_P += 0.20;
-        blended_B = Math.max(0.01, blended_B - 0.15);
+        blended_P *= 1.3;
+        blended_B *= 0.7;
       } else {
-        blended_B += 0.20;
-        blended_P = Math.max(0.01, blended_P - 0.15);
+        blended_B *= 1.3;
+        blended_P *= 0.7;
       }
       velocityAdjustmentLabel = `Quebra de Alternância [Efeito de Velocidade Lenta]`;
     }
@@ -1365,8 +1398,9 @@ export function predictNext(
   let db_T_weight = db_T > 0.15 ? (db_T - 0.15) * 0.6 : 0;
   const p_Tie = Math.min(0.42, Math.max(0.04, tieExpectation + db_T_weight));
 
-  const player_before = Math.max(0.01, blended_P);
-  const banker_before = Math.max(0.01, blended_B);
+  // Ensure a mathematically sound statistical floor (no extreme 1% simulated probabilities)
+  const player_before = Math.max(0.20, blended_P);
+  const banker_before = Math.max(0.20, blended_B);
   const sum_PB = player_before + banker_before;
   
   const target_PB_probability = 1.0 - p_Tie;
